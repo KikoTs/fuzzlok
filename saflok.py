@@ -1,7 +1,9 @@
 from random import randint
+import multiprocessing
+import time
 
 # Some sort of static encryption key??
-c_aDecode = [
+DECODE_ARRAY = [
     0xEA, 0x0D, 0xD9, 0x74, 0x4E, 0x28, 0xFD, 0xBA, 0x7B, 0x98, 0x87, 0x78, 0xDD, 0x8D, 0xB5,
     0x1A, 0x0E, 0x30, 0xF3, 0x2F, 0x6A, 0x3B, 0xAC, 0x09, 0xB9, 0x20, 0x6E, 0x5B, 0x2B, 0xB6,
     0x21, 0xAA, 0x17, 0x44, 0x5A, 0x54, 0x57, 0xBE, 0x0A, 0x52, 0x67, 0xC9, 0x50, 0x35, 0xF5,
@@ -22,7 +24,7 @@ c_aDecode = [
     0xAF
 ]
 
-key_levels = [
+KEY_LEVELS = [
     (1, "Guest Key"),
     (2, "Connectors"),
     (3, "Suite"),
@@ -41,135 +43,171 @@ key_levels = [
     (16, "Primary Programming Key (PPK)"),
 ]
 
-weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-bytes_to_change = 2
-iter_count = 0
+def worker(bytes_to_change,print_lock,worker_number):
 
-while True:
+    # Keep track of iterations
+    iter_count = 0
 
-    # Encrypted Card data
-    strCard = [
-        0x64, 0xC0, 0x6F, 0x56, 0x13, 0x69, 0x20, 0xDB, 0x8B, 0x04, 0xE9, 0x32, 0x34, 0x0F, 0xA4, 0xA0,
-        0x8A
-    ]
+    # Main loop
+    while True:
 
-    # Pick a random bytes to change (we may accidentally change the same ones)
-    for _ in range(0,bytes_to_change):
-        pos = randint(0,16)
-        b = randint(0,255)
-        strCard[pos] = b
-        # print("Changing strCard[{}] to 0x{:02x}".format(pos,b))
+        # Encrypted Card data
+        strCard = [
+            0x64, 0xC0, 0x6F, 0x56, 0x13, 0x69, 0x20, 0xDB, 0x8B, 0x04, 0xE9, 0x32, 0x34, 0x0F, 0xA4, 0xA0,
+            0x8A
+        ]
 
-    # Where we put the decrypted card data
-    dc = []
+        # Pick a random bytes to change (we may accidentally change the same ones)
+        cbyte = randint(1,bytes_to_change)
+        available_pos = list(range(17))
+        chosen_pos = []
+        for _ in range(0,cbyte):
+            pos = randint(0,len(available_pos) - 1)
+            b = randint(0,255)
+            strCard[pos] = b
+            chosen_pos.append(pos)
+            # print("Changing strCard[{}] to 0x{:02x}".format(pos,b))
 
-    # Setup
-    length = 17
+        # Where we put the decrypted card data
+        dc = []
 
-    # Stage 1??
-    for i in range(0, length):
-        num = c_aDecode[strCard[i]] - (i + 1)
-        if num < 0:
-            num += 256
-        dc.append(num)
+        # Setup
+        length = 17
 
-    # Stage 2
-    bob = dc[10]
-    alice = bob & 1 #Even/odd thingy
+        # Stage 1??
+        for i in range(0, length):
+            num = DECODE_ARRAY[strCard[i]] - (i + 1)
+            if num < 0:
+                num += 256
+            dc.append(num)
 
-    # Stage 3
-    for zeta in range(17, 0, -1):
-        bob = dc[zeta - 1]
-        for xi in range(8, 0, -1):
-            yip = zeta + xi
-            if(yip > length):
-                yip -= length
-            charlie = dc[yip - 1]
-            david = (charlie & 0x80) >> 7
-            charlie = ((charlie << 1) & 0xFF) | alice
-            alice = (bob & 0x80) >> 7
-            bob =  ((bob << 1) & 0xFF) | david
-            dc[yip - 1] = charlie
-        dc[zeta - 1] = bob
+        # Stage 2
+        bob = dc[10]
+        alice = bob & 1 #Even/odd thingy
 
-    # Print the contents of our decrypted array
-    pos = 0
-    for byte in dc:
-        pos += 1
+        # Stage 3
+        for zeta in range(17, 0, -1):
+            bob = dc[zeta - 1]
+            for xi in range(8, 0, -1):
+                yip = zeta + xi
+                if(yip > length):
+                    yip -= length
+                charlie = dc[yip - 1]
+                david = (charlie & 0x80) >> 7
+                charlie = ((charlie << 1) & 0xFF) | alice
+                alice = (bob & 0x80) >> 7
+                bob =  ((bob << 1) & 0xFF) | david
+                dc[yip - 1] = charlie
+            dc[zeta - 1] = bob
 
-    ## Print info ##
-    # Byte 0
-    key_level_no, key_level_text = key_levels[(dc[0] & 0xF0) >> 4]
-    led_warning = (dc[0] & 0x08) >> 3
+        # Print the contents of our decrypted array
+        pos = 0
+        for byte in dc:
+            pos += 1
 
-    # Byte 1
-    key_id = dc[1]
+        ## Print info ##
+        # Byte 0
+        key_level_no, key_level_text = KEY_LEVELS[(dc[0] & 0xF0) >> 4]
+        led_warning = (dc[0] & 0x08) >> 3
 
-    # Byte 2 & 3
-    key_record_high = dc[2] & 0x7F
-    opening_key = (dc[2] & 0x80) >> 7
-    key_record = (key_record_high << 8) | dc[3]
+        # Byte 1
+        key_id = dc[1]
 
-    # Byte 5 & 6
-    sequence_combination_number = ((dc[5] & 0x0F) << 8) | dc[6]
+        # Byte 2 & 3
+        key_record_high = dc[2] & 0x7F
+        opening_key = (dc[2] & 0x80) >> 7
+        key_record = (key_record_high << 8) | dc[3]
 
-    # Property ID and year, bytes 14 & 15
-    creation_year_bits = (dc[14] & 0xF0)
-    property_id = ((dc[14] & 0x0F) << 8) | dc[15]
+        # Byte 5 & 6
+        sequence_combination_number = ((dc[5] & 0x0F) << 8) | dc[6]
 
-    # Byte 7 override deadbolt and days
-    override_deadbolt = (dc[7] & 0x80) >> 7
-    restricted_weekday = dc[7] & 0x7F
+        # Property ID and year, bytes 14 & 15
+        creation_year_bits = (dc[14] & 0xF0)
+        property_id = ((dc[14] & 0x0F) << 8) | dc[15]
 
-    interval_year = dc[8] >> 4
-    interval_month = dc[8] & 0x0f
-    interval_day = (dc[9] >> 3) & 0x1F
-    interval_hour = ((dc[9] & 0x07) << 2) | (dc[10] >> 6)
-    interval_minute = dc[10] & 0x3F
+        # Byte 7 override deadbolt and days
+        override_deadbolt = (dc[7] & 0x80) >> 7
+        restricted_weekday = dc[7] & 0x7F
 
-    creation_year = (((dc[11] & 0xF0) >> 4) + 1980) | creation_year_bits
-    creation_month = dc[11] & 0x0F;
-    creation_day = (dc[12] >> 3) & 0x1F;
-    creation_hour = ((dc[12] & 0x07) << 2) | (dc[13] >> 6);
-    creation_minute = dc[13] & 0x3F;
+        interval_year = dc[8] >> 4
+        interval_month = dc[8] & 0x0f
+        interval_day = (dc[9] >> 3) & 0x1F
+        interval_hour = ((dc[9] & 0x07) << 2) | (dc[10] >> 6)
+        interval_minute = dc[10] & 0x3F
 
-    checksum = dc[16]
+        creation_year = (((dc[11] & 0xF0) >> 4) + 1980) | creation_year_bits
+        creation_month = dc[11] & 0x0F;
+        creation_day = (dc[12] >> 3) & 0x1F;
+        creation_hour = ((dc[12] & 0x07) << 2) | (dc[13] >> 6);
+        creation_minute = dc[13] & 0x3F;
 
-    # Let's validate the checksum
-    csum = 0
+        checksum = dc[16]
 
-    # Duh, checksum isn't part of the checksum, hence 16 instead of 17
-    for i in range(0, 16):
-        csum += dc[i]
+        # Let's validate the checksum
+        csum = 0
 
-    csum = 255 - (csum & 0xff)
+        # Duh, checksum isn't part of the checksum, hence 16 instead of 17
+        for i in range(0, 16):
+            csum += dc[i]
 
-    csum_pass = checksum == csum
+        csum = 255 - (csum & 0xff)
 
-    # print("Iteration {}".format(iter_count))
-    iter_count += 1
+        csum_pass = checksum == csum
 
-    if interval_year > 1 and csum_pass and opening_key == 1 and property_id == 1142 and override_deadbolt == 1:
-        for byte in strCard:
-            print("{:02x}".format(byte),end=" ")
-        print()
-        # Tell me about yourself
-        print("----KEY INFO----")
-        print("Key Level ({}): {}".format(key_level_no, key_level_text))
-        print("LED Warn: {}".format(led_warning))
-        print("Key ID: 0x{:02x}".format(key_id))
-        print("Opening key: {}".format(opening_key))
-        print("Key Record: {:04x}".format(key_record))
-        print("Seq. combination: 0x{:02x}".format(sequence_combination_number))
-        print("Creation yr. bits: {}".format(creation_year_bits))
-        print("Property ID: {}".format(property_id))
-        print("Override deadbolt: {}".format(override_deadbolt))
-        print("Restricted days (mtwtfss): {:07b}".format(restricted_weekday))
-        print("Valid for (YYYY/MM/DDThm): {:04}/{:02}/{:02}T{:02}:{:02}".format(interval_year, interval_month, interval_day, interval_hour, interval_minute))
-        print("Creation (YYYY/MM/DDThh:mm): {:04}/{:02}/{:02}T{:02}:{:02}".format(creation_year, creation_month, creation_day, creation_hour, creation_minute))
-        print("Checksum: 0x{:02x}".format(checksum))
-        print("Computed checksum: 0x{:02x}".format(csum))
-        print("Checksum pass: {}".format(csum_pass))
-        print("----END KEY INFO----")
+        # print("Iteration {}".format(iter_count))
+        iter_count += 1
 
+        if (
+                key_level_no == 13 and
+                # interval_month > 2 and 
+                # interval_year > 0 and 
+                # opening_key == 1 and
+                # restricted_weekday == 0 and
+                # creation_year == 2025 and
+                # sequence_combination_number > 0x0f00 and
+                property_id == 1142 and
+                csum_pass
+        ):
+            with print_lock:
+                print("KEY FOUND: Proc-> {} Itr->{} Cbyte->{} Pos->{}".format(worker_number,iter_count,cbyte,chosen_pos))
+                for byte in strCard:
+                    print("{:02x}".format(byte),end=" ")
+                print()
+                # Tell me about yourself
+                print("----KEY INFO----")
+                print("Key Level ({}): {}".format(key_level_no, key_level_text))
+                print("LED Warn: {}".format(led_warning))
+                print("Key ID: 0x{:02x}".format(key_id))
+                print("Opening key: {}".format(opening_key))
+                print("Key Record: {:04x}".format(key_record))
+                print("Seq. combination: 0x{:04x}".format(sequence_combination_number))
+                print("Creation yr. bits: {}".format(creation_year_bits))
+                print("Property ID: {}".format(property_id))
+                print("Override deadbolt: {}".format(override_deadbolt))
+                print("Restricted days (mtwtfss): {:07b}".format(restricted_weekday))
+                print("Valid for (YYYY/MM/DDThm): {:04}/{:02}/{:02}T{:02}:{:02}".format(interval_year, interval_month, interval_day, interval_hour, interval_minute))
+                print("Creation (YYYY/MM/DDThh:mm): {:04}/{:02}/{:02}T{:02}:{:02}".format(creation_year, creation_month, creation_day, creation_hour, creation_minute))
+                print("Checksum: 0x{:02x}".format(checksum))
+                print("Computed checksum: 0x{:02x}".format(csum))
+                print("Checksum pass: {}".format(csum_pass))
+                print("----END KEY INFO----")
+
+if __name__ == "__main__":
+    procs = []
+    num_procs = 12
+    print_lock = multiprocessing.Lock()
+
+    for pnum in range(num_procs):
+        proc = multiprocessing.Process(target=worker, args=(6,print_lock,pnum))
+        procs.append(proc)
+        proc.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nExiting...")
+        for proc in procs:
+            proc.terminate()
+            proc.join()
