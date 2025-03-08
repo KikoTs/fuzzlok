@@ -44,7 +44,15 @@ KEY_LEVELS = [
 ]
 
 
-def worker(bytes_to_change,print_lock,worker_number):
+def worker(bytes_to_change,print_lock,status_queue,worker_number,minimum_bytes=1):
+    """
+    bytes_to_change: number of bytes to try changing to get a result
+    minimum_bytes: by default we change anywhere between 1 and bytes_to_change
+        in the ciphertext. This sets a lower bound
+    print_lock: Sync printing for multiprocessing
+    worker_number: for housekeeping and printing who found the key (so they can
+        get a prize)
+    """
 
     # Keep track of iterations
     iter_count = 0
@@ -58,16 +66,33 @@ def worker(bytes_to_change,print_lock,worker_number):
             0x8A
         ]
 
+        ###
+        # Some notes
+        # * byte 14 seems to correlate strongly to seq/combination number.
+
         # Pick a random bytes to change (we may accidentally change the same ones)
-        cbyte = randint(1,bytes_to_change)
-        available_pos = list(range(17))
+        cbyte = randint(minimum_bytes, bytes_to_change)
+
+        # Don't re-use the same byte numbers
+        available_pos = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+
+        # Keep track of what we've picked already (14 here so we can always hit the seq)
         chosen_pos = []
+
+        # Pick cbyte random byte positions from the list
         for _ in range(0,cbyte):
+            # Pick which element of our available_pos to use
             pos = randint(0,len(available_pos) - 1)
+            pick = available_pos.pop(pos)
+
+
+            # For the output
+            chosen_pos.append(pick)
+
+        for p in chosen_pos:
+            # Generate a random byte
             b = randint(0,255)
-            strCard[pos] = b
-            chosen_pos.append(pos)
-            # print("Changing strCard[{}] to 0x{:02x}".format(pos,b))
+            strCard[p] = b
 
         # Where we put the decrypted card data
         dc = []
@@ -158,14 +183,19 @@ def worker(bytes_to_change,print_lock,worker_number):
         # print("Iteration {}".format(iter_count))
         iter_count += 1
 
+        # keep a count of iterations
+        if iter_count % 1000:
+            status_queue.put(iter_count)
+
         if (
                 key_level_no == 13 and
-                # interval_month > 2 and 
-                # interval_year > 0 and 
-                # opening_key == 1 and
-                # restricted_weekday == 0 and
-                # creation_year == 2025 and
-                # sequence_combination_number > 0x0f00 and
+                # interval_month == 0 and 
+                interval_year > 1 and 
+                override_deadbolt == 1 and
+                opening_key == 1 and
+                restricted_weekday == 0 and
+                creation_year == 2025 and
+                # sequence_combination_number == (0x0 or 0xfff) and
                 property_id == 1142 and
                 csum_pass
         ):
@@ -181,7 +211,7 @@ def worker(bytes_to_change,print_lock,worker_number):
                 print("Key ID: 0x{:02x}".format(key_id))
                 print("Opening key: {}".format(opening_key))
                 print("Key Record: {:04x}".format(key_record))
-                print("Seq. combination: 0x{:04x}".format(sequence_combination_number))
+                print("Seq. combination: 0x{:03x}".format(sequence_combination_number))
                 print("Creation yr. bits: {}".format(creation_year_bits))
                 print("Property ID: {}".format(property_id))
                 print("Override deadbolt: {}".format(override_deadbolt))
@@ -195,17 +225,45 @@ def worker(bytes_to_change,print_lock,worker_number):
 
 if __name__ == "__main__":
     procs = []
-    num_procs = 12
-    print_lock = multiprocessing.Lock()
+    num_procs = 14
 
+    print_lock = multiprocessing.Lock()
+    status_queue = multiprocessing.Queue()
+
+    print(f"Starting key search with {num_procs} processes...")
+
+    # Kick off some processes (threads don't help)
     for pnum in range(num_procs):
-        proc = multiprocessing.Process(target=worker, args=(6,print_lock,pnum))
+        proc = multiprocessing.Process(
+            target=worker, kwargs={
+                "bytes_to_change": 8,
+                "minimum_bytes": 4,
+                "print_lock": print_lock,
+                "worker_number": pnum,
+                "status_queue": status_queue,
+        })
         procs.append(proc)
         proc.start()
 
+    # Track the stats
     try:
+        total_iterations = 0
+        start_time = time.time()
         while True:
-            time.sleep(1)
+            time.sleep(10)
+            while not status_queue.empty():
+                try:
+                    stat = status_queue.get(block=False)
+                    total_iterations += stat
+                except queue.Empty:
+                    break
+
+            # Putting this down here so we don't start with 0 iterations after 10 seconds
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            performance = total_iterations / elapsed_time
+            print("Elapsed: {:.2f}s | Iterations: {:,} | {:,}/sec".format(elapsed_time, total_iterations, int(performance)))
+
     except KeyboardInterrupt:
         print("\nExiting...")
         for proc in procs:
