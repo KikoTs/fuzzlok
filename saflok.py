@@ -280,32 +280,36 @@ if __name__ == "__main__":
     print(json.dumps(plaintext, indent=1))
 
     card_text = {
-        "key_level_no": 1,
-        "key_level_text": "Guest Key",
+        "key_level_no": 13,
+        #"key_level_text": "Guest Key",
         "led_warning": 0,
         "key_id": 0xf7,
-        "key_record_high": 0,
+        #"key_record_high": 0,
         "opening_key": 1,
         "key_record": 0x11,
-        "sequence_combination_number": 0xe34,
-        "creation_year_bits": 32,
+        "sequence_combination_number": 0xfff,
+        #"creation_year_bits": 32,
         "property_id": 1142,
-        "override_deadbolt": 0,
+        "override_deadbolt": 1,
         "restricted_weekday": 0,
-        "interval_year": 0,
+        "interval_year": 8,
         "interval_month": 0,
-        "interval_day": 1,
-        "interval_hour": 13,
+        "interval_day": 0,
+        "interval_hour": 0,
         "interval_minute": 0,
         "creation_year": 2025,
-        "creation_month": 2,
+        "creation_month": 3,
         "creation_day": 1,
-        "creation_hour": 20,
-        "creation_minute": 13,
-        "checksum": "0x64",
-        "csum_pass": True
+        "creation_hour": 0,
+        "creation_minute": 0,
+        #"checksum": "0x64",
+        #"csum_pass": True
     }
 
     dcard_data = encode_card(card_text)
     plaintext = decode_card(dcard_data)
     print(json.dumps(plaintext, indent=1))
+
+    ecard_data = encrypt_card(dcard_data)
+    for byte in ecard_data:
+        print(f"{byte:02x} ", end='')
