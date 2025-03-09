@@ -1,8 +1,5 @@
 #!/bin/env python
-
-from random import randint
-import multiprocessing
-import time
+import json
 
 # Some sort of static encryption key??
 DECODE_ARRAY = [
@@ -45,9 +42,24 @@ KEY_LEVELS = [
     (16, "Primary Programming Key (PPK)"),
 ]
 
-# For the handling multiprocessing
-PRINT_LOCK = multiprocessing.Lock()
-STATUS_QUEUE = multiprocessing.Queue()
+def validate(val, minimum, maximum, text, fmt="int"):
+    if not (minimum <= val <= maximum):
+        if fmt == 'int':
+            mn = minimum
+            mx = maximum
+            v = val
+        elif fmt == 'hex':
+            mn = hex(minimum)
+            mx = hex(maximum)
+            v = hex(val)
+        elif fmt == 'bin':
+            mn = bin(minimum)
+            mx = bin(maximum)
+            v = hex(val)
+        else:
+            raise ValueError("Invalid format string for validation")
+
+        raise ValueError(f"Invalid input: {text} // Valid values: {mn}->{mx} // Given: {v}")
 
 def decrypt_card(ecard_data):
     # Where we put the decrypted card data
@@ -103,7 +115,7 @@ def encrypt_card(dcard_data):
     ec = []
 
     length = 17
-    alice = 1 # ??? not sure how this would be set, it doesn't seem to matter, which is weird...
+    alice = 0 # ??? not sure how this would be set, it doesn't seem to matter, which is weird...
 
     for zeta in range(1, 18):
         bob = dcard_data[zeta - 1]
@@ -142,15 +154,15 @@ def decode_card(dcard_data):
     card['led_warning'] = (dcard_data[0] & 0x08) >> 3
 
     # Byte 1
-    card['key_id'] = dcard_data[1]
+    card['key_id'] = hex(dcard_data[1])
 
     # Byte 2 & 3
     card['key_record_high'] = dcard_data[2] & 0x7F
     card['opening_key'] = (dcard_data[2] & 0x80) >> 7
-    card['key_record'] = (card['key_record_high'] << 8) | dcard_data[3]
+    card['key_record'] = hex((card['key_record_high'] << 8) | dcard_data[3])
 
     # Byte 5 & 6
-    card['sequence_combination_number'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
+    card['sequence_combination_number'] = hex(((dcard_data[5] & 0x0F) << 8) | dcard_data[6])
 
     # Property ID and year, bytes 14 & 15
     card['creation_year_bits'] = (dcard_data[14] & 0xF0)
@@ -172,44 +184,89 @@ def decode_card(dcard_data):
     card['creation_hour'] = ((dcard_data[12] & 0x07) << 2) | (dcard_data[13] >> 6);
     card['creation_minute'] = dcard_data[13] & 0x3F;
 
-    checksum = dcard_data[16]
-
-    # Let's validate the checksum
-    csum = 0
-
-    # Duh, checksum isn't part of the checksum, hence 16 instead of 17
-    for i in range(0, 16):
-        csum += dcard_data[i]
-
-    csum = 255 - (csum & 0xff)
-
-    csum_pass = checksum == csum
-
-    card['csum_pass'] = csum_pass
-    card['checksum'] = checksum
+    card['checksum'] = hex(dcard_data[16])
+    card['csum_pass'] = dcard_data[16] == calculate_checksum(dcard_data)
 
     return card
 
+def calculate_checksum(dcard_data):
+    # Let's validate the checksum
+    calc_sum = 0
 
-# message = (
-#     f"----BEGIN KEY INFO----\n"
-#     f"Key Level ({key_level_no}): {key_level_text}\n"
-#     f"LED Warn: {led_warning}\n"
-#     f"Key ID: 0x{key_id:02x}\n"
-#     f"Opening key: {opening_key}\n"
-#     f"Key Record: {key_record:04x}\n"
-#     f"Seq. combination: 0x{sequence_combination_number:03x}\n"
-#     f"Creation yr. bits: {creation_year_bits}\n"
-#     f"Property ID: {property_id}\n"
-#     f"Override deadbolt: {override_deadbolt}\n"
-#     f"Restricted days (mtwtfss): {restricted_weekday:07b}\n"
-#     f"Valid for (YYYY/MM/DDThm): {interval_year:04}/{interval_month:02}/{interval_day:02}T{interval_hour:02}:{interval_minute:02}\n"
-#     f"Creation (YYYY/MM/DDThh:mm): {creation_year:04}/{creation_month:02}/{creation_day:02}T{creation_hour:02}:{creation_minute:02}\n"
-#     f"Checksum: 0x{checksum:02x}\n"
-#     f"Computed checksum: 0x{csum:02x}\n"
-#     f"Checksum pass: {csum_pass}\n"
-#     f"----END KEY INFO----\n"
-# )
+    # Duh, checksum isn't part of the checksum, hence 16 instead of 17
+    for i in range(0, 16):
+        calc_sum += dcard_data[i]
+
+    calc_sum = 255 - (calc_sum & 0xff)
+
+    return calc_sum
+    
+
+def encode_card(card):
+
+    # Initialize all to 0 so we have a valid key
+    dcard_data = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    # Byte 0
+    validate(card['key_level_no'], 1, 16, "key_level_no")
+    validate(card['led_warning'], 0, 1, "led_warning")
+    dcard_data[0] = ((card['key_level_no'] - 1) << 4) | (card['led_warning'] << 3)
+
+    # Byte 1
+    validate(card['key_id'], 0, 255, "key_id", fmt="hex")
+    dcard_data[1] = card['key_id']
+
+    # Bytes 2 & 3
+    validate(card['key_record'], 0, 0x7fff, 'key_record', fmt='hex')
+    validate(card['opening_key'], 0, 1, 'opening_key')
+    key_record_high = (card['key_record'] & 0xf00) >> 8
+    dcard_data[2] = key_record_high | (card['opening_key'] << 7)
+    dcard_data[3] = card['key_record'] & 0xff
+
+    # Bytes 5 & 6
+    # card['sequence_combination_number'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
+    validate(card['sequence_combination_number'], 0, 0xfff, 'sequence_combination_number', fmt='hex')
+    dcard_data[5] = (card['sequence_combination_number'] & 0xf00) >> 8
+    dcard_data[6] = card['sequence_combination_number'] & 0xff
+
+    # Property ID and year, bytes 14 & 15
+    # validate(card['creation_year_bits'], 0x10, 0xf0, 'creation_year_bits') # why?? whatever
+    validate(card['property_id'], 0, 4095, 'property_id')
+    creation_year_bits = (card['creation_year'] - 1980) & 0xf0
+    dcard_data[14] = creation_year_bits | (card['property_id'] & 0xf00) >> 8
+    dcard_data[15] = card['property_id'] & 0xff
+
+    # Byte 7 override deadbolt and days
+    validate(card['override_deadbolt'], 0, 1, 'override_deadbolt')
+    validate(card['restricted_weekday'], 0, 127, 'restricted_weekday', fmt='bin')
+    dcard_data[7] = (card['override_deadbolt'] << 7) | card['restricted_weekday']
+
+    # Byte 8 year/month
+    validate(card['interval_year'], 0, 15, 'interval_year')
+    validate(card['interval_month'], 0, 15, 'interval_month')
+    dcard_data[8] = (card['interval_year'] << 4) | card['interval_month']
+
+    # Bytes 9/10 interval day/hr/min
+    validate(card['interval_day'], 0, 31, 'interval_day')
+    validate(card['interval_hour'], 0, 23, 'interval_hour') # 0-31
+    validate(card['interval_minute'], 0, 59, 'interval_minute') # 0-63
+    dcard_data[9] = (card['interval_day'] << 3) | ((card['interval_hour'] & 0x1c) >> 2)
+    dcard_data[10] = ((card['interval_hour'] & 0x3) << 6) | (card['interval_minute'] & 0x3f)
+
+    # Bytes 11 year/month
+    validate(card['creation_year'], 1980, 2235, 'creation_year')
+    validate(card['creation_month'], 1, 12, 'creation_month') # 0-15
+    dcard_data[11] = (((card['creation_year'] - 1980) & 0xf) << 4) | card['creation_month']
+
+    # Bytes 12/13 day/hr/min
+    validate(card['creation_day'], 0, 31, 'creation_day')
+    validate(card['creation_hour'], 0, 23, 'creation_hour')
+    validate(card['creation_minute'], 0, 59, 'interval_minute') # 0-63
+    dcard_data[12] = (card['creation_day'] << 3) | ((card['creation_hour'] & 0x1c) >> 2)
+    dcard_data[13] = ((card['creation_hour'] & 0x3) << 6) | (card['creation_minute'] & 0x3f)
+
+    dcard_data[16] = calculate_checksum(dcard_data)
+    return dcard_data
 
 if __name__ == "__main__":
 
@@ -218,51 +275,37 @@ if __name__ == "__main__":
         0x64, 0xC0, 0x6F, 0x56, 0x13, 0x69, 0x20, 0xDB, 0x8B, 0x04, 0xE9, 0x32, 0x34, 0x0F, 0xA4, 0xA0,
         0x8A
     ]
-
-    print(f"{ecard_data}")
-
     dcard_data = decrypt_card(ecard_data)
+    plaintext = decode_card(dcard_data)
+    print(json.dumps(plaintext, indent=1))
 
-    print(dcard_data)
+    card_text = {
+        "key_level_no": 1,
+        "key_level_text": "Guest Key",
+        "led_warning": 0,
+        "key_id": 0xf7,
+        "key_record_high": 0,
+        "opening_key": 1,
+        "key_record": 0x11,
+        "sequence_combination_number": 0xe34,
+        "creation_year_bits": 32,
+        "property_id": 1142,
+        "override_deadbolt": 0,
+        "restricted_weekday": 0,
+        "interval_year": 0,
+        "interval_month": 0,
+        "interval_day": 1,
+        "interval_hour": 13,
+        "interval_minute": 0,
+        "creation_year": 2025,
+        "creation_month": 2,
+        "creation_day": 1,
+        "creation_hour": 20,
+        "creation_minute": 13,
+        "checksum": "0x64",
+        "csum_pass": True
+    }
 
-    ecard_data = encrypt_card(dcard_data)
-
-    print(f"{ecard_data}")
-            
-
-    # Kick off some processes (threads don't help)
-    # for pnum in range(num_procs):
-    #     proc = multiprocessing.Process(
-    #         target=worker, kwargs={
-    #             "ecard_data": ecard_data,
-    #             "bytes_to_change": 8,
-    #             "minimum_bytes": 5,
-    #             "worker_number": pnum,
-    #     })
-    #     procs.append(proc)
-    #     proc.start()
-
-    # # Track the stats
-    # try:
-    #     total_iterations = 0
-    #     start_time = time.time()
-    #     while True:
-    #         time.sleep(10)
-    #         while not STATUS_QUEUE.empty():
-    #             try:
-    #                 stat = STATUS_QUEUE.get(block=False)
-    #                 total_iterations += stat
-    #             except queue.Empty:
-    #                 break
-
-    #         # Putting this down here so we don't start with 0 iterations after 10 seconds
-    #         current_time = time.time()
-    #         elapsed_time = current_time - start_time
-    #         performance = total_iterations / elapsed_time
-    #         print("Elapsed: {:.2f}s | Iterations: {:,} | {:,}/sec".format(elapsed_time, total_iterations, int(performance)))
-
-    # except KeyboardInterrupt:
-    #     print("\nExiting...")
-    #     for proc in procs:
-    #         proc.terminate()
-    #         proc.join()
+    dcard_data = encode_card(card_text)
+    plaintext = decode_card(dcard_data)
+    print(json.dumps(plaintext, indent=1))
