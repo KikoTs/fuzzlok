@@ -170,7 +170,7 @@ def decode_card(dcard_data):
     card = {}
 
     # Byte 0
-    card['key_level_no'], card['key_level_text'] = KEY_LEVELS[(dcard_data[0] & 0xF0) >> 4]
+    card['key_level'], card['key_level_text'] = KEY_LEVELS[(dcard_data[0] & 0xF0) >> 4]
     card['led_warning'] = (dcard_data[0] & 0x08) >> 3
 
     # Byte 1
@@ -182,7 +182,7 @@ def decode_card(dcard_data):
     card['key_record'] = (card['key_record_high'] << 8) | dcard_data[3]
 
     # Byte 5 & 6
-    card['sequence_combination_number'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
+    card['sequence'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
 
     # Property ID and year, bytes 14 & 15
     card['creation_year_bits'] = (dcard_data[14] & 0xF0)
@@ -231,9 +231,9 @@ def encode_card(card):
     dcard_data = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
     # Byte 0
-    validate(card['key_level_no'], 1, 16, "key_level_no")
+    validate(card['key_level'], 1, 16, "key_level")
     validate(card['led_warning'], 0, 1, "led_warning")
-    dcard_data[0] = ((card['key_level_no'] - 1) << 4) | (card['led_warning'] << 3)
+    dcard_data[0] = ((card['key_level'] - 1) << 4) | (card['led_warning'] << 3)
 
     # Byte 1
     validate(card['key_id'], 0, 255, "key_id", fmt="hex")
@@ -247,10 +247,10 @@ def encode_card(card):
     dcard_data[3] = card['key_record'] & 0xff
 
     # Bytes 5 & 6
-    # card['sequence_combination_number'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
-    validate(card['sequence_combination_number'], 0, 0xfff, 'sequence_combination_number', fmt='hex')
-    dcard_data[5] = (card['sequence_combination_number'] & 0xf00) >> 8
-    dcard_data[6] = card['sequence_combination_number'] & 0xff
+    # card['sequence'] = ((dcard_data[5] & 0x0F) << 8) | dcard_data[6]
+    validate(card['sequence'], 0, 0xfff, 'sequence', fmt='hex')
+    dcard_data[5] = (card['sequence'] & 0xf00) >> 8
+    dcard_data[6] = card['sequence'] & 0xff
 
     # Property ID and year, bytes 14 & 15
     # validate(card['creation_year_bits'], 0x10, 0xf0, 'creation_year_bits') # why?? whatever
@@ -300,7 +300,7 @@ def parse_args():
     parser.add_argument("input_file", type=str, help="Path to the input NFC file. Defaults will be set using this file as the template.")
 
     # Optional arguments with required types and defaults
-    parser.add_argument("--key-level-no", type=int, help="Key level number (int)")
+    parser.add_argument("--key-level", type=int, help="Key level number (int)")
     parser.add_argument("--led-warning", type=int, choices=[0,1], default=0, help="Enable LED warning (0|1)")
     parser.add_argument("--key-id", type=lambda x: int(x, 16), help="Key ID (1-byte hex)")
     parser.add_argument("--opening-key", type=int, choices=[0, 1], help="Opening key (0|1)")
@@ -318,7 +318,7 @@ def parse_args():
     parser.add_argument("--creation-day", type=int, help="Creation day (int)")
     parser.add_argument("--creation-hour", type=int, help="Creation hour (int)")
     parser.add_argument("--creation-minute", type=int, help="Creation minute (int)")
-    parser.add_argument("--sequence-combination-number", type=lambda x: int(x, 16) & 0xFFF, help="Sequence combination number (12-bit hex)")
+    parser.add_argument("--sequence", type=lambda x: int(x, 16) & 0xFFF, help="Sequence combination number (12-bit hex)")
     parser.add_argument("--output", type=str, help="Path to the output NFC file. If not specified, card data will be printed to stdout.")
 
     args = parser.parse_args()
@@ -399,13 +399,13 @@ def pretty_print(ctx, ecd):
 
     # Make it nice looking
     print(
-        f"{PURPLE} ###### {BLUE}Key Level{RESET}: {ctx['key_level_no']}\n"
-        f"{PURPLE}   #    {BLUE}Key Desc{RESET}: {KEY_LEVELS[ctx['key_level_no'] - 1][1]}\n"
+        f"{PURPLE} ###### {BLUE}Key Level{RESET}: {ctx['key_level']}\n"
+        f"{PURPLE}   #    {BLUE}Key Desc{RESET}: {KEY_LEVELS[ctx['key_level'] - 1][1]}\n"
         f"{PURPLE}    #   {BLUE}LED Warn{RESET}: {ctx['led_warning']}\n"
         f"{PURPLE}   #    {BLUE}Key ID{RESET}: 0x{ctx['key_id']:02x}\n"
         f"{PURPLE} ###### {BLUE}Opening Key{RESET}: {ctx['opening_key']}\n"
         f"{PURPLE}        {BLUE}Key Record{RESET}: 0x{ctx['key_record']:04x}\n"
-        f"{PURPLE} ##   # {BLUE}Seq/Combo{RESET}: 0x{ctx['sequence_combination_number']:03x}\n"
+        f"{PURPLE} ##   # {BLUE}Seq/Combo{RESET}: 0x{ctx['sequence']:03x}\n"
         f"{PURPLE} # #  # {BLUE}Property ID{RESET}: {ctx['property_id']}\n"
         f"{PURPLE} #  # # {BLUE}Override Deadbolt{RESET}: {ctx['override_deadbolt']}\n"
         f"{PURPLE} #   ## {BLUE}Weekdays (mtwtfss){RESET}: {ctx['restricted_weekday']:07b}\n"
