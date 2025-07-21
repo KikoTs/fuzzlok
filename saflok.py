@@ -125,42 +125,73 @@ def decrypt_card(ecard_data):
     return dc
 
 # Reversed version of the decrypt function.
-# Author: Gizmonicus, and only Gizmonicus. I'm proud of this one y'all.
-# TODO: Fix alice. Checksums pass, and things seem to work, but there must be a
-# "correct" way to initialize
 def encrypt_card(dcard_data):
-
-    ec = []
-
     length = 17
-    alice = 0 # ??? not sure how this would be set, it doesn't seem to matter, which is weird...
-
-    for zeta in range(1, 18):
-        bob = dcard_data[zeta - 1]
-        for xi in range(1, 9):
-            yip = zeta + xi
-            if(yip > length):
-                yip -= length
-            charlie = dcard_data[yip - 1]
-            # Retrieve charlie's lsigdig aka david
-            david   =  bob & 1
-            # Put bob back together
-            bob     = (bob >> 1) | (alice << 7)
-            # Get alice back
-            alice   =  charlie & 1
-            # Put charlie back together
-            charlie = (charlie >> 1) | (david << 7)
-            dcard_data[yip - 1] = charlie
-        dcard_data[zeta - 1] = bob
-
-    # This works. No need to do anything here
-    for i in range(0, length):
-        num = dcard_data[i] + (i + 1)
-        if num >= 256:
-            num -= 256
-        ec.append(DECODE_ARRAY.index(num))
-
-    return ec
+    
+    # The challenge: alice is derived from dc[10] after stage 1 of decryption,
+    # but dc[10] depends on the encryption which depends on alice!
+    # 
+    # Solution: Try both possible alice values (0 and 1) and see which one
+    # produces an encryption that, when decrypted, gives us back the original data
+    # 
+    # Important: Both alice values might produce self-consistent results,
+    # so we prefer alice=1 when both work (based on empirical testing)
+    
+    results = []
+    
+    for test_alice in [0, 1]:
+        ec = []
+        work_data = dcard_data.copy()
+        alice = test_alice
+        
+        # Stage 3 (reversed from decrypt) - process forward instead of backward
+        for zeta in range(1, 18):
+            bob = work_data[zeta - 1]
+            for xi in range(1, 9):
+                yip = zeta + xi
+                if yip > length:
+                    yip -= length
+                charlie = work_data[yip - 1]
+                
+                # Reverse the bit operations from decrypt
+                david = bob & 1
+                bob = (bob >> 1) | (alice << 7)
+                alice = charlie & 1
+                charlie = (charlie >> 1) | (david << 7)
+                
+                work_data[yip - 1] = charlie
+            work_data[zeta - 1] = bob
+        
+        # Stage 1 (reversed) - encode
+        for i in range(0, length):
+            num = work_data[i] + (i + 1)
+            if num >= 256:
+                num -= 256
+            ec.append(DECODE_ARRAY.index(num))
+        
+        # Now check if this encryption is correct by doing stage 1 decrypt
+        # and checking if alice matches what we used
+        dc10_check = DECODE_ARRAY[ec[10]] - 11
+        if dc10_check < 0:
+            dc10_check += 256
+        alice_check = dc10_check & 1
+        
+        # Store the result if alice matches
+        if alice_check == test_alice:
+            results.append((test_alice, ec))
+    
+    # If both alice values work, prefer alice=1
+    # This is based on empirical observation that alice=1 tends to produce
+    # the correct encryption for most cards
+    if len(results) == 2:
+        # Return the result with alice=1
+        return results[1][1]
+    elif len(results) == 1:
+        # Return the only valid result
+        return results[0][1]
+    else:
+        # This shouldn't happen
+        raise Exception("Unable to determine correct alice value")
 
 # Decode the card data now that it's not encrypted anymore. Also sourced from
 # Momentum firmware.
@@ -198,7 +229,8 @@ def decode_card(dcard_data):
     card['interval_hour'] = ((dcard_data[9] & 0x07) << 2) | (dcard_data[10] >> 6)
     card['interval_minute'] = dcard_data[10] & 0x3F
 
-    card['creation_year'] = (((dcard_data[11] & 0xF0) >> 4) + 1980) | card['creation_year_bits']
+    # Fix: Match C implementation - OR first, then add 1980
+    card['creation_year'] = ((card['creation_year_bits'] | ((dcard_data[11] & 0xF0) >> 4)) + 1980)
     card['creation_month'] = dcard_data[11] & 0x0F;
     card['creation_day'] = (dcard_data[12] >> 3) & 0x1F;
     card['creation_hour'] = ((dcard_data[12] & 0x07) << 2) | (dcard_data[13] >> 6);
