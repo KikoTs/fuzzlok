@@ -125,6 +125,8 @@ def decrypt_card(ecard_data):
     return dc
 
 # Reversed version of the decrypt function.
+# Author: Gizmonicus, and only Gizmonicus. I'm proud of this one y'all.
+# Fixed alice algorithm, checksum seems to pass now and Property Number stays the same
 def encrypt_card(dcard_data):
     length = 17
     
